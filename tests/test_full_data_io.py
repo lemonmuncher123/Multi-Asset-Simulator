@@ -1,0 +1,496 @@
+import csv
+import io
+import os
+import sqlite3
+import tempfile
+import zipfile
+import pytest
+from pathlib import Path
+
+from src.storage.database import init_db
+from src.models.asset import Asset
+from src.storage.asset_repo import create_asset, list_assets, get_asset
+from src.storage.transaction_repo import create_transaction, list_transactions
+from src.models.transaction import Transaction
+from src.engines.full_data_io import (
+    EXPORT_TABLES,
+    export_full_data,
+    import_full_data,
+    inspect_full_export,
+    read_csv_table,
+    _get_table_columns,
+)
+
+
+@pytest.fixture
+def db_conn():
+    conn = init_db(":memory:")
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
+def populated_db(db_conn):
+    a1 = create_asset(db_conn, Asset(symbol="AAPL", name="Apple", asset_type="stock"))
+    a2 = create_asset(db_conn, Asset(symbol="BTC", name="Bitcoin", asset_type="crypto", region="Global"))
+
+    create_transaction(db_conn, Transaction(
+        date="2025-01-01", txn_type="deposit_cash",
+        total_amount=100000.0, currency="USD",
+    ))
+    create_transaction(db_conn, Transaction(
+        date="2025-01-02", txn_type="buy", asset_id=a1.id,
+        quantity=10, price=150.0, total_amount=-1500.0, currency="USD",
+    ))
+
+    db_conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?)",
+        ("theme", "dark"),
+    )
+    db_conn.commit()
+    return db_conn
+
+
+# --- Export generates all expected CSV files ---
+
+def test_export_to_folder_creates_all_files(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        result = export_full_data(populated_db, out)
+        assert result.success
+        for table in EXPORT_TABLES:
+            assert (out / f"{table}.csv").exists(), f"{table}.csv missing"
+        assert (out / "manifest.csv").exists()
+
+
+def test_export_to_zip_creates_all_files(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "backup.zip"
+        result = export_full_data(populated_db, out)
+        assert result.success
+        with zipfile.ZipFile(out, "r") as zf:
+            names = zf.namelist()
+            for table in EXPORT_TABLES:
+                assert f"{table}.csv" in names
+            assert "manifest.csv" in names
+
+
+# --- CSV headers match table columns ---
+
+def test_export_csv_headers_match_schema(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+
+        for table in EXPORT_TABLES:
+            expected_cols = _get_table_columns(populated_db, table)
+            with open(out / f"{table}.csv") as f:
+                reader = csv.reader(f)
+                headers = next(reader)
+            assert headers == expected_cols, f"{table} headers mismatch"
+
+
+# --- Manifest row counts match ---
+
+def test_manifest_row_counts_match(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+
+        with open(out / "manifest.csv") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                table = row["table_name"]
+                expected_count = int(row["row_count"])
+                with open(out / f"{table}.csv") as tf:
+                    table_reader = csv.reader(tf)
+                    next(table_reader)  # skip headers
+                    actual_count = sum(1 for _ in table_reader)
+                assert actual_count == expected_count, f"{table} count mismatch"
+
+
+# --- Full import restores data ---
+
+def test_import_restores_row_counts(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+
+        asset_count = populated_db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+        txn_count = populated_db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+
+        conn2 = init_db(":memory:")
+        result = import_full_data(conn2, out)
+        assert result.success, result.message
+
+        assert conn2.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == asset_count
+        assert conn2.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == txn_count
+        conn2.close()
+
+
+def test_import_restores_key_values(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+
+        conn2 = init_db(":memory:")
+        import_full_data(conn2, out)
+
+        aapl = conn2.execute(
+            "SELECT * FROM assets WHERE symbol = ?", ("AAPL",)
+        ).fetchone()
+        assert aapl is not None
+        assert aapl["name"] == "Apple"
+        assert aapl["asset_type"] == "stock"
+
+        setting = conn2.execute(
+            "SELECT value FROM settings WHERE key = ?", ("theme",)
+        ).fetchone()
+        assert setting["value"] == "dark"
+        conn2.close()
+
+
+# --- Import preserves ids ---
+
+def test_import_preserves_ids(populated_db):
+    orig_assets = populated_db.execute("SELECT id, symbol FROM assets").fetchall()
+    orig_txns = populated_db.execute("SELECT id, txn_type FROM transactions").fetchall()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+
+        conn2 = init_db(":memory:")
+        import_full_data(conn2, out)
+
+        for orig in orig_assets:
+            row = conn2.execute(
+                "SELECT symbol FROM assets WHERE id = ?", (orig["id"],)
+            ).fetchone()
+            assert row is not None
+            assert row["symbol"] == orig["symbol"]
+
+        for orig in orig_txns:
+            row = conn2.execute(
+                "SELECT txn_type FROM transactions WHERE id = ?", (orig["id"],)
+            ).fetchone()
+            assert row is not None
+            assert row["txn_type"] == orig["txn_type"]
+
+        conn2.close()
+
+
+# --- Foreign keys pass after import ---
+
+def test_import_foreign_keys_valid(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+
+        conn2 = init_db(":memory:")
+        result = import_full_data(conn2, out)
+        assert result.success
+
+        conn2.execute("PRAGMA foreign_keys=ON")
+        fk_issues = conn2.execute("PRAGMA foreign_key_check").fetchall()
+        assert len(fk_issues) == 0
+        conn2.close()
+
+
+# --- Import preserves the journal → transaction link ---
+
+def test_import_preserves_journal_transaction_link(db_conn):
+    # Schema v2 dropped the back-pointer transactions.journal_id, so the
+    # only direction worth round-tripping is decision_journal.transaction_id.
+    asset = create_asset(db_conn, Asset(symbol="AAPL", name="Apple", asset_type="stock"))
+
+    create_transaction(db_conn, Transaction(
+        date="2025-01-02", txn_type="buy", asset_id=asset.id,
+        quantity=10, price=150.0, total_amount=-1500.0,
+        currency="USD",
+    ))
+    txn_id = db_conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    db_conn.execute(
+        "INSERT INTO decision_journal (transaction_id, date, title, reasoning) "
+        "VALUES (?, ?, ?, ?)",
+        (txn_id, "2025-01-02", "Buy Apple", "Growth thesis"),
+    )
+    journal_id = db_conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    db_conn.commit()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(db_conn, out)
+
+        conn2 = init_db(":memory:")
+        result = import_full_data(conn2, out)
+        assert result.success, result.message
+
+        j = conn2.execute(
+            "SELECT transaction_id FROM decision_journal WHERE id = ?", (journal_id,)
+        ).fetchone()
+        assert j["transaction_id"] == txn_id
+
+        conn2.close()
+
+
+# --- Rollback on invalid CSV ---
+
+def test_import_rollback_on_bad_csv(db_conn):
+    create_asset(db_conn, Asset(symbol="AAPL", name="Apple", asset_type="stock"))
+    db_conn.commit()
+    orig_count = db_conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(db_conn, out)
+
+        # Corrupt a CSV by adding a bad column header
+        txn_path = out / "transactions.csv"
+        txn_path.write_text("bad,headers,only\n1,2,3\n")
+
+        conn2 = init_db(":memory:")
+        create_asset(conn2, Asset(symbol="MSFT", name="Microsoft", asset_type="stock"))
+        conn2.commit()
+        pre_import_count = conn2.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+
+        result = import_full_data(conn2, out)
+        assert not result.success
+
+        post_import_count = conn2.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+        assert post_import_count == pre_import_count
+        conn2.close()
+
+
+def test_import_missing_manifest(db_conn):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        out.mkdir()
+        result = import_full_data(db_conn, out)
+        assert not result.success
+        assert "manifest" in result.message.lower()
+
+
+def test_import_missing_csv_file(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+        os.remove(out / "assets.csv")
+
+        conn2 = init_db(":memory:")
+        result = import_full_data(conn2, out)
+        assert not result.success
+        assert "assets" in result.message.lower()
+        conn2.close()
+
+
+# --- inspect_full_export ---
+
+def test_inspect_reads_metadata(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+
+        manifest = inspect_full_export(out)
+        assert manifest is not None
+        assert manifest.schema_version == "1"
+        assert manifest.exported_at != ""
+        table_names = [t.name for t in manifest.tables]
+        for table in EXPORT_TABLES:
+            assert table in table_names
+
+
+def test_inspect_returns_none_for_invalid(db_conn):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = inspect_full_export(tmpdir)
+        assert result is None
+
+
+def test_inspect_from_zip(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "backup.zip"
+        export_full_data(populated_db, out)
+
+        manifest = inspect_full_export(out)
+        assert manifest is not None
+        assert len(manifest.tables) == len(EXPORT_TABLES)
+
+
+def test_inspect_does_not_modify_db(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+
+        count_before = populated_db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+        inspect_full_export(out)
+        count_after = populated_db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+        assert count_before == count_after
+
+
+# --- read_csv_table ---
+
+def test_read_csv_table_from_folder(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+
+        result = read_csv_table(out, "assets")
+        assert result is not None
+        headers, rows = result
+        assert "symbol" in headers
+        assert len(rows) == 2
+
+
+def test_read_csv_table_from_zip(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "backup.zip"
+        export_full_data(populated_db, out)
+
+        result = read_csv_table(out, "assets")
+        assert result is not None
+        headers, rows = result
+        assert len(rows) == 2
+
+
+def test_read_csv_table_max_rows(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+
+        result = read_csv_table(out, "assets", max_rows=1)
+        assert result is not None
+        _, rows = result
+        assert len(rows) == 1
+
+
+def test_read_csv_table_missing_returns_none(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        export_full_data(populated_db, out)
+        result = read_csv_table(out, "nonexistent_table")
+        assert result is None
+
+
+# --- Zip roundtrip ---
+
+def test_zip_roundtrip(populated_db):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "backup.zip"
+        export_full_data(populated_db, out)
+
+        conn2 = init_db(":memory:")
+        result = import_full_data(conn2, out)
+        assert result.success
+
+        assert conn2.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 2
+        assert conn2.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 2
+        conn2.close()
+
+
+# --- Unsupported mode ---
+
+def test_import_unsupported_mode(db_conn):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = import_full_data(db_conn, tmpdir, mode="merge")
+        assert not result.success
+        assert "unsupported" in result.message.lower()
+
+
+# --- Property columns roundtrip ---
+
+def test_full_export_import_preserves_property_columns(db_conn):
+    from src.engines.ledger import deposit_cash, add_property, sell_property
+
+    deposit_cash(db_conn, "2025-01-01", 200000.0)
+    asset, _, _ = add_property(
+        db_conn, "2025-02-01", symbol="H1", name="House",
+        purchase_price=500000.0, mortgage_balance=400000.0,
+        rent_collection_frequency="annual",
+    )
+    sell_property(db_conn, "2025-06-01", asset.id, 550000.0, fees=5000.0)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        result = export_full_data(db_conn, out)
+        assert result.success
+
+        conn2 = init_db(":memory:")
+        result = import_full_data(conn2, out)
+        assert result.success, result.message
+
+        row = conn2.execute(
+            "SELECT status, sold_date, sold_price, sale_fees, rent_collection_frequency "
+            "FROM properties WHERE asset_id = ?",
+            (asset.id,),
+        ).fetchone()
+        assert row is not None
+        assert row["status"] == "sold"
+        assert row["sold_date"] == "2025-06-01"
+        assert row["sold_price"] == 550000.0
+        assert row["sale_fees"] == 5000.0
+        assert row["rent_collection_frequency"] == "annual"
+
+        conn2.close()
+
+
+# --- Reports in full backup ---
+
+def test_export_includes_reports_csv(populated_db):
+    from src.engines.reports import generate_monthly_report
+    generate_monthly_report(populated_db, 2025, 1)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "export"
+        result = export_full_data(populated_db, out)
+        assert result.success
+        assert (out / "reports.csv").exists()
+
+        import csv as _csv
+        with open(out / "reports.csv") as f:
+            reader = _csv.DictReader(f)
+            rows = list(reader)
+        assert len(rows) == 1
+        assert rows[0]["report_type"] == "monthly"
+        assert rows[0]["period_label"] == "2025-01"
+
+
+def test_import_restores_reports(populated_db):
+    import json
+    from src.engines.reports import generate_monthly_report
+    from src.storage.report_repo import report_exists, get_report
+
+    report = generate_monthly_report(populated_db, 2025, 1)
+    orig_json = report.report_json
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "backup.zip"
+        export_full_data(populated_db, out)
+
+        conn2 = init_db(":memory:")
+        result = import_full_data(conn2, out)
+        assert result.success, result.message
+
+        assert report_exists(conn2, "monthly", "2025-01")
+        restored = get_report(conn2, "monthly", "2025-01")
+        assert restored.report_json == orig_json
+        data = json.loads(restored.report_json)
+        assert "summary" in data
+
+        conn2.close()
+
+
+# --- EXPORT_TABLES schema coverage guard ---
+
+def test_export_tables_covers_all_active_schema_tables(db_conn):
+    schema_tables = {
+        row[0] for row in db_conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    }
+    missing = schema_tables - set(EXPORT_TABLES)
+    assert not missing, (
+        f"EXPORT_TABLES is missing active schema tables: {sorted(missing)}. "
+        "Full backup/restore must cover every table created by the schema."
+    )
