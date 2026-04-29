@@ -148,8 +148,8 @@ The release build has every dependency bundled inside, so no Python install or `
 
 If you cloned this repository from GitHub and want to run from source, you can still skip the manual `venv` / `pip` dance:
 
-- **macOS:** double-click `Launch Portfolio Trainer.command` at the repo root.
-- **Windows:** double-click `Launch Portfolio Trainer.bat` at the repo root.
+- **macOS:** double-click `Mac Launch Portfolio Trainer.command` at the repo root.
+- **Windows:** double-click `Windows Launch Portfolio Trainer.bat` at the repo root.
 
 Each launcher delegates to [`scripts/bootstrap_launcher.py`](scripts/bootstrap_launcher.py), which:
 
@@ -164,13 +164,13 @@ Each launcher delegates to [`scripts/bootstrap_launcher.py`](scripts/bootstrap_l
 - An **internet connection** so `pip` can download dependencies.
 - The first launch can take several minutes while wheels download. Subsequent launches are fast.
 
-**macOS Gatekeeper note:** if the system blocks `Launch Portfolio Trainer.command` because the file came from the internet, right-click it in Finder and choose **Open** the first time.
+**macOS Gatekeeper note:** if the system blocks `Mac Launch Portfolio Trainer.command` because the file came from the internet, right-click it in Finder and choose **Open** the first time.
 
 ---
 
 ## Installation
 
-If you'd rather wire up the venv yourself instead of using `Launch Portfolio Trainer.*`:
+If you'd rather wire up the venv yourself instead of using the `Mac Launch Portfolio Trainer.command` / `Windows Launch Portfolio Trainer.bat` double-click launchers:
 
 ```bash
 git clone https://github.com/<your-username>/asset-trainer-local.git
@@ -210,7 +210,7 @@ The double-click launchers need a Python 3 interpreter on `PATH`.
 - Install **Python 3.12** or **3.13** from [python.org/downloads](https://www.python.org/downloads/).
 - On macOS, after installing, run the bundled `Install Certificates.command` once so `pip` can fetch packages over HTTPS.
 - On Windows, when running the python.org installer **tick "Add python.exe to PATH"** on the first screen.
-- Re-run `Launch Portfolio Trainer.command` / `.bat`.
+- Re-run `Mac Launch Portfolio Trainer.command` / `Windows Launch Portfolio Trainer.bat`.
 
 If you'd rather not install Python at all, use the packaged GitHub Release instead — it ships its own Python and dependencies inside the bundle.
 
