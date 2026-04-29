@@ -1,0 +1,76 @@
+name: Build desktop release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # needed to attach artifacts to a Release
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: PortfolioTrainer-macOS
+            bundle_glob: "dist/Portfolio Trainer.app"
+          - os: windows-latest
+            artifact_name: PortfolioTrainer-Windows
+            bundle_glob: "dist/Portfolio Trainer"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm PortfolioTrainer.spec
+
+      # Pack to a zip the user can download from the release page.
+      - name: Package macOS .app
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          zip -r -y "../${{ matrix.artifact_name }}.zip" "Portfolio Trainer.app"
+
+      - name: Package Windows folder
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $src = "dist/Portfolio Trainer"
+          $dst = "${{ matrix.artifact_name }}.zip"
+          Compress-Archive -Path $src -DestinationPath $dst -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.zip
+          if-no-files-found: error
+
+      - name: Attach artifact to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact_name }}.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -582,6 +582,40 @@ def test_data_sync_disables_buttons_when_yfinance_missing():
     conn.close()
 
 
+def test_data_sync_hides_install_button_in_frozen_mode():
+    """In a packaged/frozen build the user can't pip-install into the
+    bundle, so the in-app Install Dependencies button should be hidden
+    regardless of whether yfinance happens to be importable."""
+    import src.gui.pages.data_sync as ds
+    from src.gui.pages.data_sync import DataSyncPage
+    from src.storage.database import init_db
+    conn = init_db(":memory:")
+    page = DataSyncPage(conn)
+
+    # Frozen + yfinance missing: button hidden, message explains bundle.
+    with patch.object(ds.sys, "frozen", True, create=True), \
+         patch("src.gui.pages.data_sync.is_yfinance_available", return_value=False):
+        page._update_dep_status()
+    assert page.btn_install.isHidden(), "Install button must be hidden in frozen mode"
+    assert "bundled" in page.install_status_label.text().lower()
+
+    # Frozen + yfinance present: still hidden, status still informative.
+    with patch.object(ds.sys, "frozen", True, create=True), \
+         patch("src.gui.pages.data_sync.is_yfinance_available", return_value=True):
+        page._update_dep_status()
+    assert page.btn_install.isHidden()
+
+    # Source mode (frozen attr removed): yfinance missing → button visible again.
+    # We assert getattr(sys, "frozen", False) is False at this point.
+    if hasattr(ds.sys, "frozen"):
+        delattr(ds.sys, "frozen")
+    with patch("src.gui.pages.data_sync.is_yfinance_available", return_value=False):
+        page._update_dep_status()
+    assert not page.btn_install.isHidden(), "Install button should be visible in source mode"
+
+    conn.close()
+
+
 def test_injected_providers_bypass_yfinance_check(db_conn):
     create_asset(db_conn, Asset(symbol="BTC", name="Bitcoin", asset_type="crypto"))
     providers = {"crypto": MockCryptoProvider()}

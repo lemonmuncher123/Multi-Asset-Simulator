@@ -1,4 +1,5 @@
 import sqlite3
+import sys
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QMessageBox, QTableWidgetItem, QScrollArea, QGroupBox, QComboBox,
@@ -125,12 +126,32 @@ class DataSyncPage(QWidget):
 
     def _update_dep_status(self):
         available = is_yfinance_available()
+        frozen = getattr(sys, "frozen", False)
         if available:
             self.dep_label.setText("yfinance: installed")
             self.dep_label.setStyleSheet(
                 "font-size: 14px; padding: 4px; color: #2e7d32; font-weight: bold;"
             )
             self.btn_install.setVisible(False)
+            self.install_status_label.setText(
+                "Dependencies are bundled in this release build."
+                if frozen else ""
+            )
+        elif frozen:
+            # In a frozen/packaged build the user cannot pip-install into the
+            # bundle, so the in-app install button would just confuse them.
+            self.dep_label.setText("yfinance: unavailable in this build")
+            self.dep_label.setStyleSheet(
+                "font-size: 14px; padding: 4px; color: #c62828; font-weight: bold;"
+            )
+            self.btn_install.setVisible(False)
+            self.install_status_label.setText(
+                "Dependencies are bundled in the release build. "
+                "If yfinance is missing, please re-download the latest release."
+            )
+            self.install_status_label.setStyleSheet(
+                "font-size: 13px; padding: 4px; color: #555;"
+            )
         else:
             self.dep_label.setText("yfinance: not installed")
             self.dep_label.setStyleSheet(

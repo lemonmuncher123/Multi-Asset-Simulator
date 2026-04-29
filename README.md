@@ -1,5 +1,4 @@
-# Multi-asset-Simulator-Manager
-This local program can be used to simulate or manage assets in various types including stocks, ETFs, real estates and debts. It can be used for a simulator for people who want to practice investment straggles or just for a general view of your assets if you choose to put all of them by hand in this program.
+# Asset Trainer Local
 
 A local-only desktop application for practicing multi-asset portfolio thinking — stocks, ETFs, crypto, real estate, cash, debt, and custom assets — built with Python and PySide6.
 
@@ -16,8 +15,10 @@ This is a **training simulator**, not a trading platform.
 - [Screens](#screens)
 - [Tech Stack](#tech-stack)
 - [Requirements](#requirements)
+- [Quick Start](#quick-start)
 - [Installation](#installation)
 - [Running the App](#running-the-app)
+- [Troubleshooting](#troubleshooting)
 - [Running the Tests](#running-the-tests)
 - [Project Structure](#project-structure)
 - [Data & Privacy](#data--privacy)
@@ -121,11 +122,55 @@ openpyxl>=3.1,<4
 python-dateutil>=2.8,<3
 ```
 
-A reasonably recent Python 3 is required (PySide6 6.6+ is supported on Python 3.9+).
+A reasonably recent Python 3 is required (PySide6 6.6+ is supported on Python 3.9+). The source-tree double-click launchers prefer **Python 3.12 or 3.13**, which is the range whose PySide6 / yfinance / pandas wheels are tested.
+
+---
+
+## Quick Start
+
+There are two supported ways to run the app. Pick whichever matches your situation.
+
+### 1. Recommended for normal users — download a packaged release
+
+If you don't want to install Python or run anything from a terminal, download the pre-built release for your OS from the project's GitHub Releases page:
+
+- **macOS:** download `PortfolioTrainer-macOS.zip`, unzip it, and double-click `Portfolio Trainer.app`.
+- **Windows:** download `PortfolioTrainer-Windows.zip`, unzip it, and double-click `Portfolio Trainer.exe` inside the unzipped folder.
+
+These are unsigned builds. The first time you launch them you'll have to confirm the OS warning:
+
+- **macOS:** the system may say *"Portfolio Trainer cannot be opened because the developer cannot be verified."* Right-click the `.app` and choose **Open**, then click **Open** in the dialog. After the first launch, double-click works normally.
+- **Windows:** SmartScreen may show *"Windows protected your PC."* Click **More info** → **Run anyway**.
+
+The release build has every dependency bundled inside, so no Python install or `pip` is needed. The Data Sync page hides the in-app *Install Dependencies* button when running from a packaged release.
+
+### 2. Source users — double-click launchers
+
+If you cloned this repository from GitHub and want to run from source, you can still skip the manual `venv` / `pip` dance:
+
+- **macOS:** double-click `Launch Portfolio Trainer.command` at the repo root.
+- **Windows:** double-click `Launch Portfolio Trainer.bat` at the repo root.
+
+Each launcher delegates to [`scripts/bootstrap_launcher.py`](scripts/bootstrap_launcher.py), which:
+
+1. Picks a usable interpreter (preferring **Python 3.12 or 3.13**).
+2. Creates `.venv/` in the project root if it doesn't exist.
+3. Installs `requirements.txt` into that venv on first launch (and re-installs only when `requirements.txt` changes — a marker file caches the last-installed hash).
+4. Starts `main.py` using the venv interpreter.
+5. Writes a launcher log to `.launcher/launcher.log`.
+
+**First-launch requirements:**
+- **Python 3.12 or 3.13** must already be installed and on `PATH`. (Get it from [python.org/downloads](https://www.python.org/downloads/).)
+- An **internet connection** so `pip` can download dependencies.
+- The first launch can take several minutes while wheels download. Subsequent launches are fast.
+
+**macOS Gatekeeper note:** if the system blocks `Launch Portfolio Trainer.command` because the file came from the internet, right-click it in Finder and choose **Open** the first time.
 
 ---
 
 ## Installation
+
+If you'd rather wire up the venv yourself instead of using `Launch Portfolio Trainer.*`:
 
 ```bash
 git clone https://github.com/<your-username>/asset-trainer-local.git
@@ -135,7 +180,7 @@ source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-If you skip `yfinance` at first, the Data Sync page provides a one-click "Install Dependencies" button that runs `pip install -r requirements.txt` for you.
+If you skip `yfinance` at first, the Data Sync page provides a one-click "Install Dependencies" button that runs `pip install -r requirements.txt` for you. (This button is hidden in packaged release builds, since dependencies are bundled there.)
 
 ---
 
@@ -153,6 +198,52 @@ On the first launch the app will:
 2. If `yfinance` is installed and any syncable asset already exists, run an initial market-data sync in the background.
 3. Generate any missing monthly / annual reports for completed periods.
 4. Record a daily portfolio snapshot for today.
+
+---
+
+## Troubleshooting
+
+### "Python not found" / launcher closes immediately
+
+The double-click launchers need a Python 3 interpreter on `PATH`.
+
+- Install **Python 3.12** or **3.13** from [python.org/downloads](https://www.python.org/downloads/).
+- On macOS, after installing, run the bundled `Install Certificates.command` once so `pip` can fetch packages over HTTPS.
+- On Windows, when running the python.org installer **tick "Add python.exe to PATH"** on the first screen.
+- Re-run `Launch Portfolio Trainer.command` / `.bat`.
+
+If you'd rather not install Python at all, use the packaged GitHub Release instead — it ships its own Python and dependencies inside the bundle.
+
+### Dependency install failed on first launch
+
+If the bootstrap launcher errors out during `pip install`:
+
+1. Check that you have an active internet connection.
+2. Re-run the launcher — `pip` reuses already-downloaded wheels, so retries are cheap.
+3. If a specific package keeps failing, delete `.venv/` at the repo root and try again with Python 3.12 or 3.13.
+4. As a last resort, use the packaged release build instead of the source launcher.
+
+### Where are the logs?
+
+| Log                 | Path                                                                  |
+| ------------------- | --------------------------------------------------------------------- |
+| Launcher (bootstrap) | `<repo>/.launcher/launcher.log` (rotates at ~512 KB)                  |
+| App (runtime)       | macOS: `~/Library/Logs/asset-trainer/app.log`                         |
+|                     | Windows: `%LOCALAPPDATA%\asset-trainer\Logs\app.log`                  |
+|                     | Linux: `$XDG_STATE_HOME/asset-trainer/logs/app.log`                   |
+
+The launcher log is the right place to look for setup / venv / pip errors. The app log is the right place to look for crashes or sync errors **after** the GUI has come up.
+
+### When should I use the Release build instead of the source launcher?
+
+Use the packaged Release if any of these apply:
+
+- You don't have Python 3.12 or 3.13 and don't want to install it.
+- You don't want to wait through a one-time `pip install` on the first run.
+- You want a self-contained `.app` / `.exe` you can move to another folder and double-click.
+- You're sharing the app with someone non-technical.
+
+Use the source launcher if you want to tweak the code, run tests, or stay on the bleeding edge of the repo.
 
 ---
 
@@ -175,12 +266,19 @@ pytest -m stress_phase1             # only structure & integrity checks
 
 ```
 .
-├── main.py                  # Entry point
+├── main.py                          # Entry point
 ├── requirements.txt
 ├── pytest.ini
-├── README.md                # ← this file
-├── USER_GUIDE_FROM_CODE.txt # Detailed feature-by-feature user guide
-├── CLAUDE.md                # Project conventions
+├── README.md                        # ← this file
+├── USER_GUIDE_FROM_CODE.txt         # Detailed feature-by-feature user guide
+├── CLAUDE.md                        # Project conventions
+├── PortfolioTrainer.spec            # PyInstaller build spec
+├── Mac Launch Portfolio Trainer.command     # macOS double-click source launcher
+├── Windows Launch Portfolio Trainer.bat     # Windows double-click source launcher
+├── scripts/
+│   └── bootstrap_launcher.py        # Cross-platform venv + launch logic
+├── .github/workflows/
+│   └── build-desktop.yml            # macOS + Windows release builds on tag
 ├── src/
 │   ├── models/              # Dataclasses (Asset, Transaction, Property, etc.)
 │   ├── storage/             # SQLite schema + per-table repositories
@@ -222,6 +320,8 @@ The GUI must not contain financial calculations — all derivation logic lives i
 ## Data & Privacy
 
 All user data stays on your machine. The only network calls are made by `yfinance` when you explicitly sync market data or preview a buy/sell of a syncable asset.
+
+User data lives in a per-user OS directory **outside** the app folder, so deleting / re-extracting / upgrading the release `.app` or `.exe` does not touch your portfolio. The exact paths are below.
 
 ### Database location
 

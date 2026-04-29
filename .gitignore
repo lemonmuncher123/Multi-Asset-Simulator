@@ -1,47 +1,26 @@
-# macOS
-.DS_Store
-
-# Python cache
-__pycache__/
-*.py[cod]
-
-# Virtual environments
-venv/
+# Virtual environments and launcher state
 .venv/
-env/
+.launcher/
 
-# Test/cache
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# Secrets
-.env
-.env.*
-*.key
-*.pem
-secrets.json
-credentials.json
-token.json
-
-# Logs and crash reports
-*.log
-logs/
-crash_reports/
-*.crash
-
-# Databases/local data
-*.db
-*.sqlite
-*.sqlite3
-
-# Build outputs
+# PyInstaller build output
 build/
 dist/
-*.egg-info/
 
-# IDE
-.vscode/
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
 .idea/
+.vscode/
+
+# Local user data and SQLite sidecar files
+data/*.db
+*.db-wal
+*.db-shm
+
+# Note: PortfolioTrainer.spec is intentionally tracked.

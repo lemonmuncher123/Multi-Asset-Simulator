@@ -3,11 +3,28 @@ import os
 import shutil
 import sqlite3
 import sys
+from importlib import resources
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+
+
+def _read_schema_sql() -> str:
+    """Load schema.sql in a way that works in both source and frozen builds.
+
+    PyInstaller bundles `src/storage/schema.sql` as a package resource, so
+    `Path(__file__).parent` doesn't necessarily point at a real directory
+    when frozen. `importlib.resources` is the supported way to read
+    bundled package data; the path-based fallback covers edge cases like
+    custom test harnesses that import the module without installing the
+    package.
+    """
+    try:
+        return resources.files("src.storage").joinpath("schema.sql").read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError, AttributeError, TypeError):
+        return SCHEMA_PATH.read_text(encoding="utf-8")
 
 # Legacy in-repo location (kept so we can migrate existing installs).
 _LEGACY_DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "portfolio_simulator.db"
@@ -93,7 +110,7 @@ def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
 
 def init_db(db_path: str | Path | None = None) -> sqlite3.Connection:
     conn = get_connection(db_path)
-    schema_sql = SCHEMA_PATH.read_text()
+    schema_sql = _read_schema_sql()
     conn.executescript(schema_sql)
 
     existing_version = get_schema_version(conn)
