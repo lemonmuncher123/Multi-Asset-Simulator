@@ -1,0 +1,123 @@
+name: Build desktop release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and attach to (e.g. v0.1.0). Creates the release if it doesn't exist. Leave blank to only build workflow artifacts."
+        required: false
+        type: string
+
+permissions:
+  contents: write   # needed to create / attach files to a Release
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: PortfolioTrainer-macOS
+          - os: windows-latest
+            artifact_name: PortfolioTrainer-Windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Verify spec exists
+        shell: bash
+        run: |
+          if [ ! -f "PortfolioTrainer.spec" ]; then
+            echo "ERROR: PortfolioTrainer.spec not found at repo root"
+            ls -la
+            exit 1
+          fi
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm --clean PortfolioTrainer.spec
+
+      - name: List dist/ contents
+        shell: bash
+        run: |
+          echo "=== dist/ ==="
+          ls -la dist/ || true
+
+      # macOS: the spec's BUNDLE() step produces "Portfolio Trainer.app".
+      # Fail loudly if it isn't there so an empty release can't slip through.
+      - name: Package macOS .app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d "dist/Portfolio Trainer.app" ]; then
+            echo "ERROR: dist/Portfolio Trainer.app was not produced by PyInstaller."
+            echo "dist/ contents:"
+            ls -la dist/ || true
+            exit 1
+          fi
+          cd dist
+          zip -r -y "../${{ matrix.artifact_name }}.zip" "Portfolio Trainer.app"
+          cd ..
+          ls -la "${{ matrix.artifact_name }}.zip"
+
+      # Windows one-folder build: dist/Portfolio Trainer/ contains the .exe.
+      - name: Package Windows folder
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $src = "dist/Portfolio Trainer"
+          if (-not (Test-Path -LiteralPath $src -PathType Container)) {
+            Write-Error "ERROR: $src was not produced by PyInstaller."
+            Get-ChildItem dist -ErrorAction SilentlyContinue | Format-Table
+            exit 1
+          }
+          $dst = "${{ matrix.artifact_name }}.zip"
+          if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force }
+          Compress-Archive -Path $src -DestinationPath $dst -Force
+          Get-Item $dst
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.zip
+          if-no-files-found: error
+
+      # Attach to the GitHub Release. Two ways to land here:
+      #   1. The workflow was triggered by a tag push (refs/tags/v*).
+      #   2. The workflow was dispatched manually with an explicit tag input.
+      # In both cases softprops/action-gh-release@v2 will create the release if
+      # it doesn't exist yet and add the zip as a downloadable asset.
+      - name: Attach artifact to GitHub Release
+        if: |
+          startsWith(github.ref, 'refs/tags/v') ||
+          (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: ${{ matrix.artifact_name }}.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
