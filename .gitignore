@@ -1,0 +1,28 @@
+# Virtual environments and launcher state
+.venv/
+.launcher/
+
+# PyInstaller build output
+build/
+dist/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local user data and SQLite sidecar files
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Note: PortfolioTrainer.spec is intentionally tracked.
